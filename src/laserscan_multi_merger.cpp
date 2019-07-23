@@ -3,7 +3,7 @@
 #include <tf/transform_listener.h>
 #include <pcl_ros/transforms.h>
 #include <laser_geometry/laser_geometry.h>
-#include <pcl/ros/conversions.h>
+#include <pcl/conversions.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/io/pcd_io.h>
@@ -71,25 +71,35 @@ void LaserscanMerger::reconfigureCallback(laserscan_multi_mergerConfig &config, 
 void LaserscanMerger::laserscan_topic_parser()
 {
 	// LaserScan topics to subscribe
-	ros::master::V_TopicInfo topics;
-	ros::master::getTopics(topics);
+  ros::master::V_TopicInfo topics;
+  ros::Duration check_duration(20.0);
+  ros::Time start_check_time = ros::Time::now();
+  vector<string> tmp_input_topics;
+  while(ros::Time::now() - start_check_time < check_duration)
+  {
+    ros::master::getTopics(topics);
 
     istringstream iss(laserscan_topics);
-	vector<string> tokens;
-	copy(istream_iterator<string>(iss), istream_iterator<string>(), back_inserter<vector<string> >(tokens));
+    vector<string> tokens;
+    copy(istream_iterator<string>(iss), istream_iterator<string>(), back_inserter<vector<string> >(tokens));
 
-	vector<string> tmp_input_topics;
+    for(int i=0;i<tokens.size();++i)
+    {
+      for(int j=0;j<topics.size();++j)
+      {
+        if( (tokens[i].compare(topics[j].name) == 0) && (topics[j].datatype.compare("sensor_msgs/LaserScan") == 0) )
+        {
+          tmp_input_topics.push_back(topics[j].name);
+        }
+      }
+    }
 
-	for(int i=0;i<tokens.size();++i)
-	{
-	        for(int j=0;j<topics.size();++j)
-		{
-			if( (tokens[i].compare(topics[j].name) == 0) && (topics[j].datatype.compare("sensor_msgs/LaserScan") == 0) )
-			{
-				tmp_input_topics.push_back(topics[j].name);
-			}
-		}
-	}
+    if (!tmp_input_topics.empty())
+      break;
+
+    ros::Duration(1).sleep();
+    ROS_INFO("Try to get laser topics");
+  }
 
 	sort(tmp_input_topics.begin(),tmp_input_topics.end());
 	std::vector<string>::iterator last = std::unique(tmp_input_topics.begin(), tmp_input_topics.end());
@@ -116,11 +126,11 @@ void LaserscanMerger::laserscan_topic_parser()
                 scan_subscribers[i] = node_.subscribe<sensor_msgs::LaserScan> (input_topics[i].c_str(), 1, boost::bind(&LaserscanMerger::scanCallback,this, _1, input_topics[i]));
 				clouds_modified[i] = false;
 				cout << input_topics[i] << " ";
-			}
+      }
+      return;
 		}
-		else
-            ROS_INFO("Not subscribed to any topic.");
 	}
+  ROS_ERROR("Not subscribed to any topic.");
 }
 
 LaserscanMerger::LaserscanMerger()
@@ -132,12 +142,18 @@ LaserscanMerger::LaserscanMerger()
 	nh.getParam("scan_destination_topic", scan_destination_topic);
     nh.getParam("laserscan_topics", laserscan_topics);
 
+    nh.param("angle_min", angle_min, -2.36);
+    nh.param("angle_max", angle_max, 2.36);
+    nh.param("angle_increment", angle_increment, 0.0058);
+    nh.param("scan_time", scan_time, 0.0333333);
+    nh.param("range_min", range_min, 0.45);
+    nh.param("range_max", range_max, 25.0);
+
     this->laserscan_topic_parser();
 
 	point_cloud_publisher_ = node_.advertise<sensor_msgs::PointCloud2> (cloud_destination_topic.c_str(), 1, false);
 	laser_scan_publisher_ = node_.advertise<sensor_msgs::LaserScan> (scan_destination_topic.c_str(), 1, false);
 
-	tfListener_.setExtrapolationLimit(ros::Duration(0.1));
 }
 
 void LaserscanMerger::scanCallback(const sensor_msgs::LaserScan::ConstPtr& scan, std::string topic)
@@ -147,8 +163,7 @@ void LaserscanMerger::scanCallback(const sensor_msgs::LaserScan::ConstPtr& scan,
 
     // Verify that TF knows how to transform from the received scan to the destination scan frame
 	tfListener_.waitForTransform(scan->header.frame_id.c_str(), destination_frame.c_str(), scan->header.stamp, ros::Duration(1));
-
-	projector_.transformLaserScanToPointCloud(scan->header.frame_id, *scan, tmpCloud1, tfListener_);
+    projector_.transformLaserScanToPointCloud(scan->header.frame_id, *scan, tmpCloud1, tfListener_, laser_geometry::channel_option::Distance);
 	try
 	{
 		tfListener_.transformPointCloud(destination_frame.c_str(), tmpCloud1, tmpCloud2);
